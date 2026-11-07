@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancela execuções antigas da mesma branch quando um novo push chega
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: order-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+          cache-dependency-path: order-service/pom.xml
+
+      # Garante permissão de execução mesmo que o Git no Windows tenha
+      # guardado o mvnw sem o bit de executável
+      - name: Permissão do Maven Wrapper
+        run: chmod +x mvnw
+
+      # O runner já tem Docker, então o Testcontainers sobe Postgres e Kafka reais
+      - name: Build e testes
+        run: ./mvnw -B -ntp verify
+
+      - name: Publicar relatórios de teste (em caso de falha)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: order-service/target/surefire-reports/
+          if-no-files-found: ignore
