@@ -1,0 +1,28 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: order-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5433/ordersdb
+    username: orders
+    password: orders
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate   # o esquema vem do Flyway; o Hibernate só confere
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      properties:
+        enable.idempotence: true
+        # Sem cabeçalho com o nome da classe Java: cada serviço tem seu próprio
+        # record e o contrato é só o JSON.
+        spring.json.add.type.headers: false
