@@ -46,7 +46,7 @@ jobs:
 
       - name: Publicar relatórios de teste (em caso de falha)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: surefire-reports
           path: order-service/target/surefire-reports/
