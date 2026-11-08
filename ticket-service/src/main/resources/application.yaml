@@ -1,0 +1,40 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: ticket-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5434/ticketsdb
+    username: tickets
+    password: tickets
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate   # o esquema vem do Flyway; o Hibernate só confere
+
+  kafka:
+    bootstrap-servers: localhost:9092
+
+    consumer:
+      group-id: ticket-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # O ErrorHandlingDeserializer evita que uma mensagem inválida trave o consumer
+      # em loop: o erro é registrado e a mensagem é descartada.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+        # O producer não envia cabeçalho com o nome da classe, então o tipo é fixo aqui.
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.ticketing.ticket.OrderCreated
+
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
