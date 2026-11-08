@@ -15,13 +15,18 @@ permissions:
 
 jobs:
   build:
-    name: build
+    name: build (${{ matrix.service }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [order-service, ticket-service]
+
     defaults:
       run:
-        working-directory: order-service
+        working-directory: ${{ matrix.service }}
 
     steps:
       - name: Checkout
@@ -33,7 +38,7 @@ jobs:
           distribution: temurin
           java-version: "25"
           cache: maven
-          cache-dependency-path: order-service/pom.xml
+          cache-dependency-path: ${{ matrix.service }}/pom.xml
 
       # Garante permissão de execução mesmo que o Git no Windows tenha
       # guardado o mvnw sem o bit de executável
@@ -48,6 +53,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: surefire-reports
-          path: order-service/target/surefire-reports/
+          name: surefire-reports-${{ matrix.service }}
+          path: ${{ matrix.service }}/target/surefire-reports/
           if-no-files-found: ignore
