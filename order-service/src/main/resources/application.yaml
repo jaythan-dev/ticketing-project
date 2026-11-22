@@ -17,6 +17,20 @@ spring:
 
   kafka:
     bootstrap-servers: localhost:9092
+
+    consumer:
+      group-id: order-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # O ErrorHandlingDeserializer evita que uma mensagem inválida trave o consumer
+      # em loop: o erro é registrado e a mensagem é descartada.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+        # O producer não envia cabeçalho com o nome da classe, então o tipo é definido
+        # em cada @KafkaListener (atributo properties), já que cada tópico tem um tipo.
+        spring.json.use.type.headers: false
+
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer

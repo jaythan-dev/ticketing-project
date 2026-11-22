@@ -87,6 +87,16 @@ cd ticket-service
 
 No Windows, use `mvnw.cmd spring-boot:run`. O `order-service` sobe em http://localhost:8081 e o `ticket-service` em http://localhost:8082. Ambos aplicam as migrations do Flyway automaticamente.
 
+#### Alternativa: subir os serviços também no Docker
+
+Um comando sobe a infraestrutura e os dois serviços em containers:
+
+```bash
+docker compose --profile apps up -d --build
+```
+
+A primeira execução compila as imagens e pode levar alguns minutos. Acompanhe com `docker compose logs -f order-service ticket-service` e confira com `docker compose ps`. Os serviços ficam nas mesmas portas (8081 e 8082), então **não rode os mesmos serviços pela IDE ao mesmo tempo**. Para parar tudo, use `docker compose --profile apps down`.
+
 ### 3. Criar um show e fazer um pedido
 
 Crie um show com 10 ingressos:
