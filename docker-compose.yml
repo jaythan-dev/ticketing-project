@@ -1,6 +1,11 @@
-# Infraestrutura local do projeto de ticketing.
-# Os serviços Spring Boot rodam pela IDE no começo e se conectam via localhost.
-# Quando forem containerizados, usam os endereços internos (kafka:19092, orders-db:5432...).
+# Infraestrutura local do projeto de ticketing, com os serviços como opcionais.
+#
+#   docker compose up -d                          -> só a infraestrutura (Kafka, bancos, Kafka UI).
+#                                                    Os serviços rodam pela IDE, via localhost.
+#   docker compose --profile apps up -d --build   -> infraestrutura + os dois serviços em containers.
+#
+# Dentro da rede do compose, os endereços são kafka:19092, orders-db:5432 e tickets-db:5432.
+# Pela máquina, são localhost:9092, localhost:5433 e localhost:5434.
 
 name: ticketing
 
@@ -104,38 +109,53 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
-  # Serviços da aplicação: descomente quando existirem Dockerfiles.
-  # Dentro do compose, use kafka:19092 e orders-db:5432 / tickets-db:5432.
+  # Serviços da aplicação. Só sobem com: docker compose --profile apps up -d --build
+  # Não rode os mesmos serviços pela IDE ao mesmo tempo: as portas 8081 e 8082 colidem.
+  # As variáveis SPRING_* sobrescrevem o que está no application.yaml.
   # ---------------------------------------------------------------------------
-  # order-service:
-  #   build: ./order-service
-  #   ports:
-  #     - "8081:8080"
-  #   environment:
-  #     SPRING_DATASOURCE_URL: jdbc:postgresql://orders-db:5432/ordersdb
-  #     SPRING_DATASOURCE_USERNAME: orders
-  #     SPRING_DATASOURCE_PASSWORD: orders
-  #     SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-  #   depends_on:
-  #     kafka:
-  #       condition: service_healthy
-  #     orders-db:
-  #       condition: service_healthy
-  #
-  # ticket-service:
-  #   build: ./ticket-service
-  #   ports:
-  #     - "8082:8080"
-  #   environment:
-  #     SPRING_DATASOURCE_URL: jdbc:postgresql://tickets-db:5432/ticketsdb
-  #     SPRING_DATASOURCE_USERNAME: tickets
-  #     SPRING_DATASOURCE_PASSWORD: tickets
-  #     SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-  #   depends_on:
-  #     kafka:
-  #       condition: service_healthy
-  #     tickets-db:
-  #       condition: service_healthy
+  order-service:
+    profiles: ["apps"]
+    build: ./order-service
+    image: ticketing/order-service:dev
+    container_name: order-service
+    restart: on-failure
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://orders-db:5432/ordersdb
+      SPRING_DATASOURCE_USERNAME: orders
+      SPRING_DATASOURCE_PASSWORD: orders
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      JAVA_TOOL_OPTIONS: "-Xmx512m"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      orders-db:
+        condition: service_healthy
+
+  ticket-service:
+    profiles: ["apps"]
+    build: ./ticket-service
+    image: ticketing/ticket-service:dev
+    container_name: ticket-service
+    restart: on-failure
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://tickets-db:5432/ticketsdb
+      SPRING_DATASOURCE_USERNAME: tickets
+      SPRING_DATASOURCE_PASSWORD: tickets
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      JAVA_TOOL_OPTIONS: "-Xmx512m"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      tickets-db:
+        condition: service_healthy
 
 volumes:
   kafka-data:
