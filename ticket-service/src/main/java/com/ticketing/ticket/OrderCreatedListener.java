@@ -18,15 +18,22 @@ public class OrderCreatedListener {
         this.publisher = publisher;
     }
 
-    // Ainda sem idempotência: se a mesma mensagem for entregue duas vezes, reserva duas vezes.
-    // O messageId do evento será usado para resolver isso no próximo passo.
     @KafkaListener(topics = "orders.created")
     public void onOrderCreated(OrderCreated event) {
-        log.info("OrderCreated recebido orderId={} showId={} quantity={}",
-                event.orderId(), event.showId(), event.quantity());
+        if (event.messageId() == null) {
+            log.error("OrderCreated sem messageId, descartado orderId={}", event.orderId());
+            return;
+        }
 
-        ReservationService.Result result = reservationService.reserve(event.showId(), event.quantity());
+        log.info("OrderCreated recebido messageId={} orderId={} showId={} quantity={}",
+                event.messageId(), event.orderId(), event.showId(), event.quantity());
 
+        ReservationService.Result result =
+                reservationService.reserve(event.messageId(), event.showId(), event.quantity());
+
+        // Numa entrega repetida a resposta é publicada de novo, com o mesmo resultado da primeira.
+        // Isso é inofensivo para o order-service (só um pedido PENDING muda de estado) e cobre a
+        // queda entre gravar a reserva e publicar a resposta.
         if (result == ReservationService.Result.RESERVED) {
             publisher.publishReserved(TicketsReserved.from(event));
         } else {
