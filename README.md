@@ -2,7 +2,7 @@
 
 Plataforma de venda de ingressos baseada em **microserviços orientados a eventos**, construída para praticar o projeto, o teste, a escala e o deploy de um back end Java. O cenário escolhido é o de **alta concorrência**: muitos clientes disputando um estoque limitado de ingressos (como num flash sale), onde a regra mais importante é nunca vender mais do que existe.
 
-> **Status:** em desenvolvimento. O `order-service` e o `ticket-service` estão funcionando e testados. O fluxo ainda não está fechado: o `order-service` não consome as respostas do `ticket-service`, então o pedido continua `PENDING`. Veja o [roadmap](#roadmap).
+> **Status:** em desenvolvimento. O `order-service` e o `ticket-service` estão funcionando e testados, e o fluxo da saga está fechado: o pedido termina `CONFIRMED` (reserva feita) ou `CANCELLED` (sem estoque ou show inexistente). Veja o [roadmap](#roadmap).
 
 ## Arquitetura
 
@@ -15,11 +15,9 @@ flowchart LR
     TS --> TDB[("ticketsdb")]
     TS -->|"TicketsReserved"| T2{{"tickets.reserved"}}
     TS -->|"TicketsReservationFailed"| T3{{"tickets.reservation-failed"}}
-    T2 -.->|"a implementar"| OS
-    T3 -.->|"a implementar"| OS
+    T2 --> OS
+    T3 --> OS
 ```
-
-As setas pontilhadas indicam o que ainda não foi implementado.
 
 | Serviço | Responsabilidade | Banco | Porta |
 |---|---|---|---|
@@ -33,7 +31,7 @@ Os serviços **não acessam o banco um do outro** nem compartilham classes: cada
 1. O cliente chama `POST /orders`.
 2. O `order-service` grava o pedido como `PENDING` e publica `OrderCreated` em `orders.created`.
 3. O `ticket-service` consome o evento e tenta reservar os ingressos de forma atômica. Publica `TicketsReserved` ou `TicketsReservationFailed` (motivo `OUT_OF_STOCK` ou `SHOW_NOT_FOUND`).
-4. *(a implementar)* O `order-service` consome a resposta e atualiza o pedido para `CONFIRMED` ou `CANCELLED`.
+4. O `order-service` consome a resposta e atualiza o pedido para `CONFIRMED` ou `CANCELLED`.
 
 A API responde `202 Accepted` logo após o passo 2. O resultado final é consultado depois com `GET /orders/{id}`, o que caracteriza consistência eventual.
 
@@ -169,13 +167,13 @@ Regras de validação do `POST /shows`: `name` não pode ser vazio e `capacity` 
 
 ## Contrato de eventos
 
-Todos os eventos carregam `messageId` (UUID da mensagem, base da futura idempotência nos consumers) e `occurredAt`.
+Todos os eventos carregam `messageId` (UUID da mensagem, usado para a idempotência do `ticket-service`) e `occurredAt`.
 
 | Tópico | Evento | Publicado por | Consumido por | Chave |
 |---|---|---|---|---|
 | `orders.created` | `OrderCreated` | order-service | ticket-service | `showId` |
-| `tickets.reserved` | `TicketsReserved` | ticket-service | order-service *(a implementar)* | `orderId` |
-| `tickets.reservation-failed` | `TicketsReservationFailed` | ticket-service | order-service *(a implementar)* | `orderId` |
+| `tickets.reserved` | `TicketsReserved` | ticket-service | order-service | `orderId` |
+| `tickets.reservation-failed` | `TicketsReservationFailed` | ticket-service | order-service | `orderId` |
 
 Campos de cada evento:
 
@@ -189,6 +187,7 @@ Campos de cada evento:
 - **Reserva atômica no banco.** O estoque é reduzido com um único `UPDATE ... WHERE available >= :quantity`, sem "ler, conferir e gravar" na aplicação, e uma constraint `CHECK` no banco recusa estoque negativo mesmo se houver um bug no código.
 - **`showId` como chave de `orders.created`.** Todos os pedidos do mesmo show vão para a mesma partição e são processados em ordem. O custo é a possibilidade de uma chave quente num flash sale, tema que será medido nos testes de carga.
 - **Resposta assíncrona (`202`).** O pedido é aceito de imediato e confirmado depois, sem prender o cliente à reserva de estoque.
+- **Consumer idempotente por `messageId`.** O `ticket-service` grava o `messageId` e o resultado em `processed_messages` na mesma transação da reserva. Se a mesma mensagem chegar de novo, o estoque não muda e a mesma resposta é reenviada, o que também cobre uma queda entre gravar a reserva e publicar a resposta. No `order-service`, só um pedido `PENDING` muda de estado, então respostas repetidas são inofensivas.
 - **Contrato por JSON, sem classes compartilhadas.** Cada serviço tem a sua cópia dos records de evento, e o producer não envia o nome da classe Java nos cabeçalhos.
 - **Mensagens inválidas não travam o consumer.** O `ErrorHandlingDeserializer` registra o erro e descarta a mensagem em vez de repeti-la em loop.
 - **Flyway no controle do esquema.** O Hibernate roda com `ddl-auto: validate`, então toda mudança de tabela passa por uma migration versionada.
@@ -196,9 +195,7 @@ Campos de cada evento:
 
 ## Limitações conhecidas
 
-- **O `order-service` ainda não consome as respostas**, então o pedido nunca sai de `PENDING`.
-- **Sem idempotência nos consumers.** Se a mesma mensagem for entregue duas vezes, o `ticket-service` reserva duas vezes. O `messageId` do evento servirá para resolver isso.
-- **Gravar no banco e publicar no Kafka são duas operações separadas**, nos dois serviços. Se o processo cair entre as duas, o evento se perde. A correção planejada é o **outbox pattern**.
+- **Gravar no banco e publicar no Kafka são duas operações separadas**, nos dois serviços. Se o processo cair entre as duas, o evento se perde. No `ticket-service` a reentrega da mensagem reenvia a resposta guardada, mas, no `order-service`, a janela continua aberta. A correção planejada é o **outbox pattern**.
 - Sem liberação de estoque quando um pedido é cancelado (compensação da saga).
 - Sem autenticação, gateway nem dead letter topic.
 - Os testes de concorrência atuais usam uma única partição, então validam a lógica, mas não a disputa real entre várias threads.
@@ -230,8 +227,10 @@ ticketing-platform/
 - [x] Teste de integração do `order-service` com Testcontainers
 - [x] Pipeline de CI com GitHub Actions e Dependabot
 - [x] `ticket-service`: catálogo, reserva atômica de estoque e teste de integração
-- [ ] Consumers no `order-service` (`CONFIRMED` e `CANCELLED`) e teste do fluxo completo
-- [ ] Idempotência nos consumers, retry e dead letter topic
+- [x] Consumers no `order-service` (`CONFIRMED` e `CANCELLED`) e teste do fluxo completo
+- [x] Containerização dos serviços com Docker Compose
+- [x] Idempotência no `ticket-service` (`messageId`) e no `order-service` (só `PENDING` muda de estado)
+- [ ] Retry com backoff e dead letter topic
 - [ ] Outbox pattern
 - [ ] Tratamento padronizado de erros da API
 - [ ] Pagamento e compensação da saga (liberação de estoque)

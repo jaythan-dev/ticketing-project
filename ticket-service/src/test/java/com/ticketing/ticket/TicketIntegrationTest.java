@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -149,38 +150,81 @@ class TicketIntegrationTest {
         assertThat(showRepository.findById(show.getId()).orElseThrow().getAvailable()).isZero();
     }
 
+    @Test
+    void sameMessageDeliveredTwice_reservesOnlyOnce_andRepeatsTheReply() throws Exception {
+        Show show = showRepository.save(new Show("Show D", 10));
+        UUID orderId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID();
+
+        // A mesma mensagem (mesmo messageId) entregue duas vezes, como numa reentrega do Kafka
+        sendOrderCreated(messageId, orderId, show.getId(), 2);
+        sendOrderCreated(messageId, orderId, show.getId(), 2);
+
+        // A resposta é repetida, com o mesmo resultado da primeira
+        List<Reply> replies = awaitRepliesFor(orderId, 2);
+        assertThat(replies).allSatisfy(reply -> assertThat(reply.topic()).isEqualTo(TICKETS_RESERVED));
+
+        // Mas o estoque caiu só uma vez: 10 - 2 = 8 (e não 6)
+        assertThat(showRepository.findById(show.getId()).orElseThrow().getAvailable()).isEqualTo(8);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private void sendOrderCreated(UUID orderId, UUID showId, int quantity) throws Exception {
+        sendOrderCreated(UUID.randomUUID(), orderId, showId, quantity);
+    }
+
+    private void sendOrderCreated(UUID messageId, UUID orderId, UUID showId, int quantity) throws Exception {
         String value = """
                 {"messageId":"%s","occurredAt":"%s","orderId":"%s","userId":"%s","showId":"%s","quantity":%d}
-                """.formatted(UUID.randomUUID(), Instant.now(), orderId, UUID.randomUUID(), showId, quantity);
+                """.formatted(messageId, Instant.now(), orderId, UUID.randomUUID(), showId, quantity);
         producer.send(new ProducerRecord<>(ORDERS_CREATED, showId.toString(), value)).get();
     }
 
-    /** Lê as respostas (reservado ou falha) dos pedidos informados, por até 30 s. */
-    private Map<UUID, Reply> awaitReplies(Set<UUID> orderIds) {
+    private Properties consumerProps() {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        return props;
+    }
 
+    /** Lê a primeira resposta (reservado ou falha) de cada pedido informado, por até 30 s. */
+    private Map<UUID, Reply> awaitReplies(Set<UUID> orderIds) {
         Map<UUID, Reply> replies = new HashMap<>();
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps())) {
             consumer.subscribe(List.of(TICKETS_RESERVED, TICKETS_FAILED));
             long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
             while (replies.size() < orderIds.size() && System.nanoTime() < deadline) {
                 for (ConsumerRecord<String, String> record : consumer.poll(Duration.ofMillis(500))) {
                     UUID orderId = UUID.fromString(record.key());
                     if (orderIds.contains(orderId)) {
-                        replies.put(orderId, new Reply(record.topic(), json.readValue(record.value(), Map.class)));
+                        replies.putIfAbsent(orderId, new Reply(record.topic(), json.readValue(record.value(), Map.class)));
                     }
                 }
             }
         }
         assertThat(replies).as("respostas recebidas para os pedidos").hasSize(orderIds.size());
+        return replies;
+    }
+
+    /** Lê todas as respostas de um mesmo pedido até juntar a quantidade esperada, por até 30 s. */
+    private List<Reply> awaitRepliesFor(UUID orderId, int expected) {
+        List<Reply> replies = new ArrayList<>();
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps())) {
+            consumer.subscribe(List.of(TICKETS_RESERVED, TICKETS_FAILED));
+            long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+            while (replies.size() < expected && System.nanoTime() < deadline) {
+                for (ConsumerRecord<String, String> record : consumer.poll(Duration.ofMillis(500))) {
+                    if (record.key().equals(orderId.toString())) {
+                        replies.add(new Reply(record.topic(), json.readValue(record.value(), Map.class)));
+                    }
+                }
+            }
+        }
+        assertThat(replies).as("respostas para o pedido " + orderId).hasSize(expected);
         return replies;
     }
 }
